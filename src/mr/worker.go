@@ -50,62 +50,66 @@ func executeTask(task Task) {
 	// }
 
 	if task.TaskType == Map {
-		contentBites, error := os.ReadFile(task.Filename)
+		executeMapTask(task)
+	}
+}
 
-		if error != nil {
-			log.Fatal("dialing:", error)
+func executeMapTask(task Task) {
+	contentBites, error := os.ReadFile(task.Filename)
+
+	if error != nil {
+		log.Fatal("dialing:", error)
+	}
+
+	content := string(contentBites)
+	mapResult := workerServer.mapf(task.Filename, content)
+
+	var intermediateArray map[string][]KeyValue = make(map[string][]KeyValue)
+
+	/*
+	   (
+	     'filename-1' => (
+	       'wordA' => [1, 1, 1, 1],
+	       'wordB' => [1, 1, 1, 1],
+	     )
+	   )
+	*/
+	var intermediateMap map[string]map[string][]string = make(map[string]map[string][]string)
+	for _, keyValue := range mapResult {
+		filename := workerServer.mapHashfile(keyValue.Key)
+
+		if intermediateArray[filename] == nil {
+			intermediateArray[filename] = []KeyValue{}
 		}
 
-		content := string(contentBites)
-		mapResult := workerServer.mapf(task.Filename, content)
+		intermediateArray[filename] = append(intermediateArray[filename], keyValue)
 
-		var intermediateArray map[string][]KeyValue = make(map[string][]KeyValue)
-
-		/*
-		   (
-		     'filename-1' => (
-		       'wordA' => [1, 1, 1, 1],
-		       'wordB' => [1, 1, 1, 1],
-		     )
-		   )
-		*/
-		var intermediateMap map[string]map[string][]string = make(map[string]map[string][]string)
-		for _, keyValue := range mapResult {
-			filename := workerServer.mapHashfile(keyValue.Key)
-
-			if intermediateArray[filename] == nil {
-				intermediateArray[filename] = []KeyValue{}
-			}
-
-			intermediateArray[filename] = append(intermediateArray[filename], keyValue)
-
-			if intermediateMap[filename] == nil {
-				intermediateMap[filename] = make(map[string][]string)
-			}
-			if intermediateMap[filename][keyValue.Key] == nil {
-				intermediateMap[filename][keyValue.Key] = []string{}
-			}
-
-			intermediateMap[filename][keyValue.Key] = append(intermediateMap[filename][keyValue.Key], keyValue.Value)
+		if intermediateMap[filename] == nil {
+			intermediateMap[filename] = make(map[string][]string)
+		}
+		if intermediateMap[filename][keyValue.Key] == nil {
+			intermediateMap[filename][keyValue.Key] = []string{}
 		}
 
-		// aqui parece melhor usar o intermediateArray, pra ter so 2 aninhamentos ao inves 3
-		// porque parece que nao tem muita vantagem agrupar as leituras a nivel de map intermediate file
-		// só se eu fosse usar alguma tecnica um pouco mais avançada de particionamento de arquivo
-		for filename, keyValues := range intermediateMap {
-			fmt.Println("writing to ", filename)
-			file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
-			if err != nil {
-				log.Fatal("error opening file", err)
-			}
-			defer file.Close()
+		intermediateMap[filename][keyValue.Key] = append(intermediateMap[filename][keyValue.Key], keyValue.Value)
+	}
 
-			for key, values := range keyValues {
-				for _, value := range values {
-					_, err := file.WriteString(key + " " + value + "\n")
-					if err != nil {
-						log.Fatal("error writing to file ", err)
-					}
+	// aqui parece melhor usar o intermediateArray, pra ter so 2 aninhamentos ao inves 3
+	// porque parece que nao tem muita vantagem agrupar as leituras a nivel de map intermediate file
+	// só se eu fosse usar alguma tecnica um pouco mais avançada de particionamento de arquivo
+	for filename, keyValues := range intermediateMap {
+		fmt.Println("writing to ", filename)
+		file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		if err != nil {
+			log.Fatal("error opening file", err)
+		}
+		defer file.Close()
+
+		for key, values := range keyValues {
+			for _, value := range values {
+				_, err := file.WriteString(key + " " + value + "\n")
+				if err != nil {
+					log.Fatal("error writing to file ", err)
 				}
 			}
 		}

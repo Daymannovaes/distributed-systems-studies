@@ -48,6 +48,8 @@ func (c *Coordinator) AskForATask(args *WorkerServer, replyTask *Task) error {
 	fmt.Println("\n\naskforatask")
 	c.checkFailedTasks()
 
+	// @TODO add locking in C, because each RPC runs on a thread
+
 	if c.runningType == "map" {
 		if len(c.remainingFiles) == 0 {
 			replyTask.TaskType = Empty
