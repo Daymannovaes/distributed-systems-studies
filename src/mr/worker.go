@@ -1,77 +1,82 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"fmt"
+	"log"
+	"net/rpc"
+	"os"
+)
 
-
-//
-// Map functions return a slice of KeyValue.
-//
-type KeyValue struct {
-	Key   string
-	Value string
-}
-
-//
-// use ihash(key) % NReduce to choose the reduce
-// task number for each KeyValue emitted by Map.
-//
-func ihash(key string) int {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return int(h.Sum32() & 0x7fffffff)
-}
-
-
-//
 // main/mrworker.go calls this function.
-//
-func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) {
+func Worker(
+	mapf MapFnType,
+	reducef ReduceFnType,
+) {
+	workerServer := registerWorker()
 
-	// Your worker implementation here.
+	println("worker registered successfully: ", workerServer.Id)
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+	task := askForATask()
 
-}
+	if task.TaskType == "map" {
+		contentBites, error := os.ReadFile(task.Filename)
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+		if error != nil {
+			log.Fatal("dialing:", error)
+		}
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+		content := string(contentBites)
 
-	// fill in the argument(s).
-	args.X = 99
+		// print("content is: ", content)
+		mapResult := mapf(task.Filename, content)
 
-	// declare a reply structure.
-	reply := ExampleReply{}
+		var intermediate [][]string = make([][]string, task.NReduce)
+		for _, value := range mapResult {
+			// println("key: ", value.Key, " | value: ", value.Value)
+			hashValue := task.mapHashNumber(value.Key)
+			if intermediate[hashValue] == nil {
+				intermediate[hashValue] = []string{}
+			}
 
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
+			intermediate[hashValue] = append(intermediate[hashValue], value.Value)
+		}
+
+		// fmt.Println("Intermediate: ", intermediate)
 	}
 }
 
-//
+// ----- RPC Calls
+func registerWorker() WorkerServer {
+	reply := WorkerServer{}
+
+	ok := call("Coordinator.RegisterWorker", &struct{}{}, &reply)
+
+	if ok {
+		print("worker registered ", reply.Id)
+	} else {
+		println("error registering worker")
+	}
+
+	return reply
+}
+
+func askForATask() Task {
+	reply := Task{}
+	ok := call("Coordinator.AskForAJob", &struct{}{}, &reply)
+
+	if ok {
+		print("file is ", reply.Filename)
+		print("job type is ", reply.TaskType)
+	} else {
+		println("error")
+	}
+
+	return reply
+}
+
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
-//
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
