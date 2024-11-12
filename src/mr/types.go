@@ -36,8 +36,9 @@ type WorkerServer struct {
 	mapf    MapFnType
 	reducef ReduceFnType
 
-	// CurrentTask Task
 	currentTask Task
+
+	IntermediateFiles map[string]IntermediateFile
 }
 
 // task is returned by the coordinator and will be kept in the workerServer abstraction
@@ -64,6 +65,8 @@ type Task struct {
 	TaskType   TaskType
 	TaskStatus TaskStatus
 	StartedAt  time.Time
+
+	IntermediateFiles []IntermediateFile
 }
 
 // use ihash(key) % NReduce to choose the reduce
@@ -79,9 +82,18 @@ func (w *WorkerServer) mapHashNumber(value string) int {
 }
 
 // return mr-x-y where x is id of the worker and y is the reduce task number
-func (w *WorkerServer) mapHashfile(value string) string {
-	println("w.Id: ", w.Id)
-	println("value: ", value)
+func (w *WorkerServer) createIntermediateFileStructure(value string) IntermediateFile {
+	reduceId := w.mapHashNumber(value)
 
-	return "mr-" + strconv.Itoa(w.Id) + "-" + strconv.Itoa(w.mapHashNumber(value))
+	return IntermediateFile{
+		Filename: "mr-" + strconv.Itoa(w.Id) + "-" + strconv.Itoa(reduceId),
+		MapId:    w.Id,
+		ReduceId: reduceId,
+	}
+}
+
+type IntermediateFile struct {
+	Filename string
+	MapId    int
+	ReduceId int
 }

@@ -28,33 +28,39 @@ func startListeningForTasks() {
 	workerServer.currentTask = task
 
 	for task.TaskType != Shutdown {
-		fmt.Println("workerServer: ")
-		fmt.Printf("%#v\n", workerServer)
+		fmt.Println("workerServer current task: ")
+		fmt.Printf("%#v\n", workerServer.currentTask)
 
 		if task.TaskType != Empty {
-			executeTask(task)
+			intermediateFiles := executeTask(task)
 
-			callTaskSuccessful()
+			fmt.Printf("\n\n\nIntermediateFiles %#v\n", intermediateFiles)
+
+			callTaskSuccessful(intermediateFiles)
 		}
 
+		time.Sleep(time.Second)
 		task = askForATask()
-
 		time.Sleep(time.Second)
 	}
 }
 
-func executeTask(task Task) {
+func executeTask(task Task) map[string]IntermediateFile {
 	// fake timer just to simulate a hang
 	// if workerServer.Id == 1 {
 	// 	time.Sleep(time.Second * 20)
 	// }
 
 	if task.TaskType == Map {
-		executeMapTask(task)
+		return executeMapTask(task)
+	} else if task.TaskType == Reduce {
+		executeReduceTask(task)
 	}
+
+	return map[string]IntermediateFile{}
 }
 
-func executeMapTask(task Task) {
+func executeMapTask(task Task) map[string]IntermediateFile {
 	contentBites, error := os.ReadFile(task.Filename)
 
 	if error != nil {
@@ -63,6 +69,8 @@ func executeMapTask(task Task) {
 
 	content := string(contentBites)
 	mapResult := workerServer.mapf(task.Filename, content)
+
+	intermediateFiles := map[string]IntermediateFile{}
 
 	var intermediateArray map[string][]KeyValue = make(map[string][]KeyValue)
 
@@ -76,7 +84,10 @@ func executeMapTask(task Task) {
 	*/
 	var intermediateMap map[string]map[string][]string = make(map[string]map[string][]string)
 	for _, keyValue := range mapResult {
-		filename := workerServer.mapHashfile(keyValue.Key)
+		intermediateFile := workerServer.createIntermediateFileStructure(keyValue.Key)
+
+		filename := intermediateFile.Filename
+		intermediateFiles[filename] = intermediateFile
 
 		if intermediateArray[filename] == nil {
 			intermediateArray[filename] = []KeyValue{}
@@ -99,6 +110,7 @@ func executeMapTask(task Task) {
 	// só se eu fosse usar alguma tecnica um pouco mais avançada de particionamento de arquivo
 	for filename, keyValues := range intermediateMap {
 		fmt.Println("writing to ", filename)
+
 		file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 		if err != nil {
 			log.Fatal("error opening file", err)
@@ -114,6 +126,12 @@ func executeMapTask(task Task) {
 			}
 		}
 	}
+
+	return intermediateFiles
+}
+
+func executeReduceTask(task Task) {
+	fmt.Printf("executeReduceTask task %#v\n", task)
 }
 
 // ----- RPC Calls
@@ -143,8 +161,10 @@ func askForATask() Task {
 	return reply
 }
 
-func callTaskSuccessful() {
-	// se é task succesfull pq to passando worker? tinha que ser uma mistura dos 2
+func callTaskSuccessful(intermediateFiles map[string]IntermediateFile) {
+	// these will be saved in the coordinator, maybe it's better to move to a different variable
+	workerServer.IntermediateFiles = intermediateFiles
+
 	ok := call("Coordinator.TaskSuccessful", &workerServer, &struct{}{})
 
 	if ok {
@@ -152,6 +172,9 @@ func callTaskSuccessful() {
 	} else {
 		println("error callTaskSuccessful")
 	}
+
+	// empty after rpc, since we won't use it here
+	// workerServer.intermediateFiles = []IntermediateFile{}
 }
 
 // send an RPC request to the coordinator, wait for the response.

@@ -17,11 +17,13 @@ type Coordinator struct {
 	// runningFiles   []string
 	remainingFiles []string
 
-	runningType string
+	currentRunningPhase TaskType
 
 	nReduce int
 
 	tasks map[int]Task // key is the worker id
+
+	intermediateFiles map[int][]IntermediateFile
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -45,18 +47,23 @@ func (c *Coordinator) RegisterWorker(args *struct{}, reply *WorkerServer) error 
 }
 
 func (c *Coordinator) AskForATask(args *WorkerServer, replyTask *Task) error {
-	fmt.Println("\n\naskforatask")
+	fmt.Println("AskForATask, currentRunningPhase: ", c.currentRunningPhase)
 	c.checkFailedTasks()
 
-	// @TODO add locking in C, because each RPC runs on a thread
+	// @TODO add locking in `c`, because each RPC runs on a thread
 
-	if c.runningType == "map" {
+	if c.currentRunningPhase == Map {
 		if len(c.remainingFiles) == 0 {
+			// here we reply empty for the worker, and then we change the runningPhase to reduce,
+			// next time worker asks for a task, we will pass a reduce task
 			replyTask.TaskType = Empty
+
+			if c.countRemainingTasks() == 0 {
+				c.currentRunningPhase = Reduce
+			}
 		} else {
 			currentFile := c.remainingFiles[0]
 			c.remainingFiles = c.remainingFiles[1:] // pop from remaining files
-			// c.runningFiles = append(c.runningFiles, currentFile)
 
 			replyTask.Filename = currentFile
 			replyTask.TaskType = Map
@@ -65,33 +72,49 @@ func (c *Coordinator) AskForATask(args *WorkerServer, replyTask *Task) error {
 			// here, we save the task into the coordinator
 			c.tasks[args.Id] = *replyTask
 		}
-	} else {
-		// dunno
+	} else if c.currentRunningPhase == Reduce {
+		if len(c.intermediateFiles) == 0 {
+			replyTask.TaskType = Empty
+		} else {
+			// get the first key from the intermediate files
+			for reduceId, _ := range c.intermediateFiles {
+				replyTask.IntermediateFiles = c.intermediateFiles[reduceId]
+
+				// here we clean the intermediate files from current queue
+				c.intermediateFiles[reduceId] = nil
+				break
+			}
+
+			replyTask.TaskType = Reduce
+			replyTask.StartedAt = time.Now()
+
+			// saving the task into the coordinator
+			c.tasks[args.Id] = *replyTask
+		}
 	}
 	return nil
 }
 
-func (c *Coordinator) addTask(task Task) {
-
-}
-
-func remove(s []string, r string) []string {
-	for i, v := range s {
-		if v == r {
-			return append(s[:i], s[i+1:]...)
-		}
-	}
-	return s
-}
-
 func (c *Coordinator) TaskSuccessful(args *WorkerServer, reply *struct{}) error {
-	task := c.tasks[args.Id]
-	fmt.Printf("TaskSuccessful task %#v\n", task)
-	fmt.Printf("TaskSuccessful args %#v\n", args)
+	task, ok := c.tasks[args.Id]
+	fmt.Printf("\nTaskSuccessful task %#v\n", task)
+	fmt.Printf("\nTaskSuccessful args %#v\n", args)
 
-	if (task.TaskStatus == Aborted) || (task == Task{}) {
+	if (task.TaskStatus == Aborted) || !ok {
 		fmt.Println("WARNING receiving success result of a aborted task")
 		return nil
+	}
+
+	// add intermediate files so they can be used in reduce phase,
+	// already agrupping them by reduce key
+	if task.TaskType == Map {
+		for _, intermediateFile := range args.IntermediateFiles {
+			if c.intermediateFiles[intermediateFile.ReduceId] == nil {
+				c.intermediateFiles[intermediateFile.ReduceId] = []IntermediateFile{}
+			}
+
+			c.intermediateFiles[intermediateFile.ReduceId] = append(c.intermediateFiles[intermediateFile.ReduceId], intermediateFile)
+		}
 	}
 
 	// task.TaskStatus = Finished
@@ -113,13 +136,6 @@ func (c *Coordinator) checkFailedTasks() {
 			c.removeFailedTask(workerId, task)
 		}
 	}
-
-	// // todo remove remaingFiles
-	// fmt.Println("c.runningFiles", c.runningFiles)
-	// c.runningFiles = remove(c.runningFiles, args.TaskFileName)
-	// fmt.Println("c.runningFiles", c.runningFiles)
-
-	// return nil
 }
 
 func (c *Coordinator) removeFailedTask(workerId int, task Task) {
@@ -163,6 +179,7 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	ret := false
 
+	fmt.Println("Done: currentRunningPhase: ", c.currentRunningPhase)
 	fmt.Println("Done: missing: ", c.countRemainingTasks())
 
 	// Your code here.
@@ -180,8 +197,10 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.remainingFiles = files
 	// c.runningFiles = []string{}
 
-	c.runningType = "map"
+	c.currentRunningPhase = Map
 	c.nReduce = nReduce
+
+	c.intermediateFiles = make(map[int][]IntermediateFile)
 
 	c.tasks = make(map[int]Task, 0)
 
