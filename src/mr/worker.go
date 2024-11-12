@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/rpc"
@@ -41,6 +42,7 @@ func startListeningForTasks() {
 
 		time.Sleep(time.Second)
 		task = askForATask()
+		workerServer.currentTask = task
 		time.Sleep(time.Second)
 	}
 }
@@ -72,6 +74,15 @@ func executeMapTask(task Task) map[string]IntermediateFile {
 
 	intermediateFiles := map[string]IntermediateFile{}
 
+	/*
+			   (
+			     'filename-1' => [
+		          {key: 'wordA', value: 1},
+		          {key: 'wordA', value: 1},
+		          {key: 'wordB', value: 1},
+		       ]
+			   )
+	*/
 	var intermediateArray map[string][]KeyValue = make(map[string][]KeyValue)
 
 	/*
@@ -108,22 +119,23 @@ func executeMapTask(task Task) map[string]IntermediateFile {
 	// aqui parece melhor usar o intermediateArray, pra ter so 2 aninhamentos ao inves 3
 	// porque parece que nao tem muita vantagem agrupar as leituras a nivel de map intermediate file
 	// só se eu fosse usar alguma tecnica um pouco mais avançada de particionamento de arquivo
-	for filename, keyValues := range intermediateMap {
+	for filename, keyValues := range intermediateArray {
 		fmt.Println("writing to ", filename)
 
-		file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, 0644)
 		if err != nil {
 			log.Fatal("error opening file", err)
 		}
 		defer file.Close()
 
-		for key, values := range keyValues {
-			for _, value := range values {
-				_, err := file.WriteString(key + " " + value + "\n")
-				if err != nil {
-					log.Fatal("error writing to file ", err)
-				}
-			}
+		keyValuesJson, err := json.Marshal(keyValues)
+		if err != nil {
+			log.Fatal("error marshalling keyValues", err)
+		}
+
+		_, err = file.Write(keyValuesJson)
+		if err != nil {
+			log.Fatal("error writing to file", err)
 		}
 	}
 
@@ -132,6 +144,71 @@ func executeMapTask(task Task) map[string]IntermediateFile {
 
 func executeReduceTask(task Task) {
 	fmt.Printf("executeReduceTask task %#v\n", task)
+
+	keyValues := []KeyValue{}
+	for _, intermediateFile := range task.IntermediateFiles {
+		contentBites, err := os.ReadFile(intermediateFile.Filename)
+
+		if err != nil {
+			log.Fatal("dialing:", err)
+		}
+
+		var intermediateKeyValues []KeyValue
+		err = json.Unmarshal(contentBites, &intermediateKeyValues)
+		if err != nil {
+			log.Fatal("error unmarshalling:", err)
+		}
+
+		keyValues = append(keyValues, intermediateKeyValues...)
+	}
+
+	keyValueMap := make(map[string][]string)
+	for _, keyValue := range keyValues {
+		if keyValueMap[keyValue.Key] == nil {
+			keyValueMap[keyValue.Key] = []string{}
+		}
+
+		keyValueMap[keyValue.Key] = append(keyValueMap[keyValue.Key], keyValue.Value)
+	}
+
+	// @todo change id to Nreduce
+	file, err := os.OpenFile("mr-out-test", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatal("error opening file", err)
+	}
+	defer file.Close()
+
+	for key, values := range keyValueMap {
+		reduceResult := workerServer.reducef(key, values)
+		_, err = file.WriteString(key + " " + reduceResult + "\n")
+	}
+
+	// 	file, err := os.Open(intermediateFile.Filename)
+	// 	if err != nil {
+	// 		log.Fatal(err)
+	// 	}
+	// 	defer file.Close()
+
+	// 	scanner := bufio.NewScanner(file)
+	// 	// optionally, resize scanner's capacity for lines over 64K, see next example
+	// 	for scanner.Scan() {
+	// 		// keyValueLine := scanner.Text()
+	// 		// split keyValue by
+	// 	}
+
+	// 	if err := scanner.Err(); err != nil {
+	// 		log.Fatal(err)
+	// 	}
+
+	// 	contentBites, err := os.ReadFile(intermediateFile.Filename)
+
+	// 	if err != nil {
+	// 		log.Fatal("dialing:", err)
+	// 	}
+
+	// 	content := string(contentBites)
+
+	// }
 }
 
 // ----- RPC Calls
@@ -153,7 +230,8 @@ func askForATask() Task {
 
 	if ok {
 		println("file is ", reply.Filename)
-		println("job type is ", reply.TaskType)
+		println("task type is ", reply.TaskType)
+		println("task id ", reply.TaskId)
 	} else {
 		println("error")
 	}

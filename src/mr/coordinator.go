@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,9 @@ type Coordinator struct {
 	currentRunningPhase TaskType
 
 	nReduce int
+
+	workerCount int
+	taskCount   int
 
 	tasks map[int]Task // key is the worker id
 
@@ -36,18 +40,21 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
-func (c *Coordinator) RegisterWorker(args *struct{}, reply *WorkerServer) error {
-	reply.Id = len(c.tasks) + 1
-	reply.NReduce = c.nReduce
-	// reply.CurrentStatus = "idle"
+var workerMutex sync.Mutex
 
-	// devo registrar o Id aqui?
-	// c.runningTasks[reply.Id] = Task{}
+func (c *Coordinator) RegisterWorker(args *struct{}, reply *WorkerServer) error {
+	workerMutex.Lock()
+	defer workerMutex.Unlock()
+
+	reply.Id = c.workerCount
+	reply.NReduce = c.nReduce
+
+	c.workerCount++
 	return nil
 }
 
 func (c *Coordinator) AskForATask(args *WorkerServer, replyTask *Task) error {
-	fmt.Println("AskForATask, currentRunningPhase: ", c.currentRunningPhase)
+	fmt.Println("AskForATask, currentRunningPhase: ", c.currentRunningPhase, len(c.intermediateFiles))
 	c.checkFailedTasks()
 
 	// @TODO add locking in `c`, because each RPC runs on a thread
@@ -68,6 +75,8 @@ func (c *Coordinator) AskForATask(args *WorkerServer, replyTask *Task) error {
 			replyTask.Filename = currentFile
 			replyTask.TaskType = Map
 			replyTask.StartedAt = time.Now()
+			replyTask.TaskId = c.taskCount
+			c.taskCount++
 
 			// here, we save the task into the coordinator
 			c.tasks[args.Id] = *replyTask
@@ -77,16 +86,18 @@ func (c *Coordinator) AskForATask(args *WorkerServer, replyTask *Task) error {
 			replyTask.TaskType = Empty
 		} else {
 			// get the first key from the intermediate files
-			for reduceId, _ := range c.intermediateFiles {
+			for reduceId := range c.intermediateFiles {
 				replyTask.IntermediateFiles = c.intermediateFiles[reduceId]
 
 				// here we clean the intermediate files from current queue
-				c.intermediateFiles[reduceId] = nil
+				delete(c.intermediateFiles, reduceId)
 				break
 			}
 
 			replyTask.TaskType = Reduce
 			replyTask.StartedAt = time.Now()
+			replyTask.TaskId = c.taskCount
+			c.taskCount++
 
 			// saving the task into the coordinator
 			c.tasks[args.Id] = *replyTask
@@ -115,6 +126,8 @@ func (c *Coordinator) TaskSuccessful(args *WorkerServer, reply *struct{}) error 
 
 			c.intermediateFiles[intermediateFile.ReduceId] = append(c.intermediateFiles[intermediateFile.ReduceId], intermediateFile)
 		}
+	} else if task.TaskType == Reduce {
+
 	}
 
 	// task.TaskStatus = Finished
@@ -157,7 +170,12 @@ func (c *Coordinator) countRunningTasks() int {
 }
 
 func (c *Coordinator) countRemainingTasks() int {
-	return len(c.remainingFiles) + c.countRunningTasks()
+	if c.currentRunningPhase == Map {
+		return len(c.remainingFiles) + c.countRunningTasks()
+	}
+
+	// Reduce phase
+	return len(c.intermediateFiles) + c.countRunningTasks()
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -177,14 +195,10 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-
 	fmt.Println("Done: currentRunningPhase: ", c.currentRunningPhase)
 	fmt.Println("Done: missing: ", c.countRemainingTasks())
 
-	// Your code here.
-
-	return ret
+	return c.currentRunningPhase == Reduce && c.countRemainingTasks() == 0
 }
 
 // create a Coordinator.
@@ -199,6 +213,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	c.currentRunningPhase = Map
 	c.nReduce = nReduce
+	c.workerCount = 0
+	c.taskCount = 0
 
 	c.intermediateFiles = make(map[int][]IntermediateFile)
 

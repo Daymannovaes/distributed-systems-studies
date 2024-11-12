@@ -61,6 +61,7 @@ const (
 )
 
 type Task struct {
+	TaskId     int
 	Filename   string
 	TaskType   TaskType
 	TaskStatus TaskStatus
@@ -86,7 +87,7 @@ func (w *WorkerServer) createIntermediateFileStructure(value string) Intermediat
 	reduceId := w.mapHashNumber(value)
 
 	return IntermediateFile{
-		Filename: "mr-" + strconv.Itoa(w.Id) + "-" + strconv.Itoa(reduceId),
+		Filename: "mr-" + strconv.Itoa(w.currentTask.TaskId) + "-" + strconv.Itoa(reduceId),
 		MapId:    w.Id,
 		ReduceId: reduceId,
 	}
