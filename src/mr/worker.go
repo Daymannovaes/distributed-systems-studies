@@ -57,13 +57,18 @@ func executeTask(task Task) {
 		}
 
 		content := string(contentBites)
-
-		// print("content is: ", content)
 		mapResult := workerServer.mapf(task.Filename, content)
 
-		// var intermediate [][]string = make([][]string, workerServer.NReduce)
-
 		var intermediateArray map[string][]KeyValue = make(map[string][]KeyValue)
+
+		/*
+		   (
+		     'filename-1' => (
+		       'wordA' => [1, 1, 1, 1],
+		       'wordB' => [1, 1, 1, 1],
+		     )
+		   )
+		*/
 		var intermediateMap map[string]map[string][]string = make(map[string]map[string][]string)
 		for _, keyValue := range mapResult {
 			filename := workerServer.mapHashfile(keyValue.Key)
@@ -84,9 +89,26 @@ func executeTask(task Task) {
 			intermediateMap[filename][keyValue.Key] = append(intermediateMap[filename][keyValue.Key], keyValue.Value)
 		}
 
-		// fmt.Println("a3: ", intermediateMap)
+		// aqui parece melhor usar o intermediateArray, pra ter so 2 aninhamentos ao inves 3
+		// porque parece que nao tem muita vantagem agrupar as leituras a nivel de map intermediate file
+		// só se eu fosse usar alguma tecnica um pouco mais avançada de particionamento de arquivo
+		for filename, keyValues := range intermediateMap {
+			fmt.Println("writing to ", filename)
+			file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+			if err != nil {
+				log.Fatal("error opening file", err)
+			}
+			defer file.Close()
 
-		// fmt.Println("Intermediate: ", intermediate)
+			for key, values := range keyValues {
+				for _, value := range values {
+					_, err := file.WriteString(key + " " + value + "\n")
+					if err != nil {
+						log.Fatal("error writing to file ", err)
+					}
+				}
+			}
+		}
 	}
 }
 
